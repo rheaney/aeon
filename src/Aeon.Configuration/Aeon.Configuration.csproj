@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Company>Aeon</Company>
+    <Product>Aeon</Product>
+    <Version>0.7.1</Version>
+    <Title>Aeon Configuration</Title>
+    <Description>Shared configuration types for Aeon emulator hosts.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Aeon.DiskImages\Aeon.DiskImages.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator.Input\Aeon.Emulator.Input.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator.Sound\Aeon.Emulator.Sound.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator\Aeon.Emulator.csproj" />
+  </ItemGroup>
+</Project>
+
+

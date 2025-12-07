@@ -1,3 +1,9 @@
+# About this fork
+- Added `Aeon.Headless` project for headless hosting; packaged as a single NuGet that carries its dependent Aeon binaries so consumers only reference `Aeon.Headless`.
+- Introduced shared `Aeon.Configuration` project for config types.
+- Updated targets to .NET 10.0 (launcher remains WPF on Windows; headless is cross-platform).
+- Headless package build is enabled via `GeneratePackageOnBuild`.
+
 # What is Aeon?
 Aeon is an x86 with DOS emulator written in 100% C#. It was originally started in 2008 as an experiment
 in developing a high performance emulator fully in C#/.NET. So basically, it's like [DOSBox](https://www.dosbox.com/)
@@ -11,8 +17,7 @@ emulator. If you're just looking to get an old game running, just use DOSBox :)
 See the [Releases](https://github.com/gregdivis/Aeon/releases) page for the latest builds, or
 get the source and build it yourself (see building instructions below).
 
-Aeon doesn't have an installer, but does require that the .NET 6 runtime is installed.
-You can download it from Microsoft at [https://dotnet.microsoft.com/download/dotnet/6.0](https://dotnet.microsoft.com/download/dotnet/6.0).
+Aeon doesn't have an installer, but does require a matching .NET 10 runtime/SDK for the current targets.
 
 # Usage
 The easiest way to get started is just to use the "quick launch program" button in the toolbar, and
