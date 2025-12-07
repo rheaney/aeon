@@ -119,6 +119,18 @@ public sealed class HeadlessRunner : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Sends a command line and appends a newline (Enter).
+    /// </summary>
+    public Task SendCommandAsync(string text, TimeSpan? perKeyDelay = null, CancellationToken cancellationToken = default) =>
+        SendTextAsync((text ?? string.Empty) + "\n", perKeyDelay, cancellationToken);
+
+    /// <summary>
+    /// Sends multiple newlines followed by EXIT and a final newline.
+    /// </summary>
+    public Task SendExitAsync(TimeSpan? perKeyDelay = null, CancellationToken cancellationToken = default) =>
+        SendTextAsync("\n\n\nEXIT\n", perKeyDelay, cancellationToken);
+
+    /// <summary>
     /// Tap stdout/stderr so each text line is raised via <see cref="LineReceived"/>.
     /// This uses reflection to swap the DOS stdout handle for a small wrapper stream.
     /// </summary>
@@ -298,8 +310,54 @@ public sealed class HeadlessRunner : IAsyncDisposable, IDisposable
                     _ => Keys.Null
                 };
                 return key != Keys.Null;
+            case '!':
+                key = Keys.One;
+                needsShift = true;
+                return true;
+            case '@':
+                key = Keys.Two;
+                needsShift = true;
+                return true;
+            case '#':
+                key = Keys.Three;
+                needsShift = true;
+                return true;
+            case '$':
+                key = Keys.Four;
+                needsShift = true;
+                return true;
+            case '%':
+                key = Keys.Five;
+                needsShift = true;
+                return true;
+            case '^':
+                key = Keys.Six;
+                needsShift = true;
+                return true;
+            case '&':
+                key = Keys.Seven;
+                needsShift = true;
+                return true;
+            case '*':
+                key = Keys.Eight;
+                needsShift = true;
+                return true;
+            case '(':
+                key = Keys.Nine;
+                needsShift = true;
+                return true;
+            case ')':
+                key = Keys.Zero;
+                needsShift = true;
+                return true;
             case ' ':
                 key = Keys.Space;
+                return true;
+            case '\t':
+                key = Keys.Tab;
+                return true;
+            case '\b':
+                key = Keys.Backspace;
                 return true;
             case '\r':
             case '\n':
@@ -319,23 +377,67 @@ public sealed class HeadlessRunner : IAsyncDisposable, IDisposable
                 key = Keys.Equals;
                 needsShift = true;
                 return true;
-            case '.':
-                key = Keys.Period;
+            case '[':
+                key = Keys.OpenBracket;
                 return true;
-            case ',':
-                key = Keys.Comma;
+            case '{':
+                key = Keys.OpenBracket;
+                needsShift = true;
                 return true;
-            case '/':
-                key = Keys.Slash;
+            case ']':
+                key = Keys.CloseBracket;
+                return true;
+            case '}':
+                key = Keys.CloseBracket;
+                needsShift = true;
                 return true;
             case '\\':
                 key = Keys.Backslash;
+                return true;
+            case '|':
+                key = Keys.Backslash;
+                needsShift = true;
                 return true;
             case ';':
                 key = Keys.Semicolon;
                 return true;
             case ':':
                 key = Keys.Semicolon;
+                needsShift = true;
+                return true;
+            case '\'':
+                key = Keys.Apostrophe;
+                return true;
+            case '"':
+                key = Keys.Apostrophe;
+                needsShift = true;
+                return true;
+            case '`':
+                key = Keys.GraveApostrophe;
+                return true;
+            case '~':
+                key = Keys.GraveApostrophe;
+                needsShift = true;
+                return true;
+            case ',':
+                key = Keys.Comma;
+                return true;
+            case '<':
+                key = Keys.Comma;
+                needsShift = true;
+                return true;
+            case '.':
+                key = Keys.Period;
+                return true;
+            case '>':
+                key = Keys.Period;
+                needsShift = true;
+                return true;
+            case '/':
+                key = Keys.Slash;
+                return true;
+            case '?':
+                key = Keys.Slash;
                 needsShift = true;
                 return true;
             default:
