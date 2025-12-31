@@ -1,7 +1,5 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using Aeon.Emulator.Decoding;
 using Aeon.Emulator.Dos.Programs;
 using Aeon.Emulator.RuntimeExceptions;
 
@@ -32,8 +30,8 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
     public EmulatorHost() : this(new VirtualMachine())
     {
     }
-    public EmulatorHost(int physicalMemory)
-        : this(new VirtualMachine(physicalMemory))
+    public EmulatorHost(VirtualMachineInitializationOptions? options)
+        : this(new VirtualMachine(options))
     {
     }
     /// <summary>
@@ -141,8 +139,6 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
         if (commandLineArguments != null && commandLineArguments.Length > 127)
             throw new ArgumentException("Command line length must not exceed 127 characters.");
 
-        this.VirtualMachine.EndInitialization();
-
         var image = ProgramImage.Load(fileName, VirtualMachine);
         this.VirtualMachine.LoadImage(image, commandLineArguments);
         this.State = EmulatorState.Ready;
@@ -159,6 +155,10 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
 
         if (this.State == EmulatorState.Ready)
         {
+            var comspec = this.VirtualMachine.FileSystem.CommandInterpreterPath;
+            if (comspec != null)
+                this.VirtualMachine.EnvironmentVariables["COMSPEC"] = comspec.ToString();
+
             this.processorTask = Task.Run(() => this.ProcessorThreadMainAsync(false));
         }
         else if (this.State == EmulatorState.Paused)
@@ -246,7 +246,6 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void EmulateInstructions(int count)
     {
         var vm = this.VirtualMachine;
@@ -256,6 +255,8 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
 
         try
         {
+            vm.UpdateRealTimeClock();
+
             if (p.Flags.InterruptEnable & !p.TemporaryInterruptMask)
             {
                 while (p.InPrefix)
@@ -283,41 +284,6 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
             {
                 vm.RaiseInterrupt(1);
                 p.Flags.Trap = false;
-            }
-        }
-    }
-    private void EmulateInstructionsWithLogging(int count)
-    {
-        var vm = this.VirtualMachine;
-        vm.PerformDmaTransfers();
-
-        try
-        {
-            if (vm.Processor.Flags.InterruptEnable)
-            {
-                while (vm.Processor.InPrefix)
-                    vm.Emulate();
-
-                this.CheckHardwareInterrupts();
-            }
-
-            InstructionSet.Emulate(this.VirtualMachine, (uint)count);
-        }
-        catch (EmulatedException ex)
-        {
-            if (!vm.RaiseException(ex))
-                throw;
-        }
-        catch (EnableInstructionTrapException)
-        {
-            vm.Emulate();
-            while (vm.Processor.InPrefix)
-                vm.Emulate();
-
-            if (vm.Processor.Flags.Trap)
-            {
-                vm.RaiseInterrupt(1);
-                vm.Processor.Flags.Trap = false;
             }
         }
     }
@@ -436,7 +402,6 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
             return;
         }
     }
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private async Task<EmulatorState> EmulationLoopAsync(bool resume)
     {
         var speedTimer = new Stopwatch();
@@ -465,7 +430,6 @@ public sealed class EmulatorHost : IDisposable, IAsyncDisposable
             }
         }
     }
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void EmulationTightLoop(Stopwatch speedTimer)
     {
         const int InstructionBatchCount = 500;

@@ -39,6 +39,15 @@ partial class FlagState
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SetLazyValue<TValue>(TValue result) where TValue : unmanaged, IBinaryInteger<TValue>
+        {
+            this.overrides = default;
+            this.result = Unsafe.SizeOf<TValue>() == 1 ? (uint)Unsafe.BitCast<TValue, sbyte>(result)
+                : Unsafe.SizeOf<TValue>() == 2 ? (uint)Unsafe.BitCast<TValue, short>(result)
+                : uint.CreateTruncating(result);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void SetLazyByte(byte result)
         {
             this.overrides = default;
@@ -57,21 +66,18 @@ partial class FlagState
             this.result = result;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private bool CalculateSign()
         {
             bool value = (this.result & (1 << 31)) != 0;
             this.overrides.Sign = value;
             return value;
         }
-        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private bool CalculateZero()
         {
             bool value = this.result == 0;
             this.overrides.Zero = value;
             return value;
         }
-        [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private bool CalculateParity()
         {
             bool value = (BitOperations.PopCount(this.result & 0xFFu) & 1) == 0;

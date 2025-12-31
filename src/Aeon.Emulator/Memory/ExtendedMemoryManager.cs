@@ -1,13 +1,11 @@
-﻿#nullable disable
-
-namespace Aeon.Emulator.Memory;
+﻿namespace Aeon.Emulator.Memory;
 
 /// <summary>
 /// Provides DOS applications with XMS memory.
 /// </summary>
-internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallbackProvider, IInputPort, IOutputPort
+internal sealed class ExtendedMemoryManager(VirtualMachine vm) : IMultiplexInterruptHandler, ICallbackProvider, IInputPort, IOutputPort
 {
-    private VirtualMachine vm;
+    private readonly VirtualMachine vm = vm;
     private RealModeAddress callbackAddress;
     private int a20EnableCount;
     private readonly LinkedList<XmsBlock> xms = new();
@@ -35,8 +33,8 @@ internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallb
     /// </summary>
     public int ExtendedMemorySize => this.vm.PhysicalMemory.MemorySize - (int)XmsBaseAddress;
 
-    IEnumerable<int> IInputPort.InputPorts => [0x92];
-    IEnumerable<int> IOutputPort.OutputPorts => [0x92];
+    ReadOnlySpan<ushort> IInputPort.InputPorts => [0x92];
+    ReadOnlySpan<ushort> IOutputPort.OutputPorts => [0x92];
     int IMultiplexInterruptHandler.Identifier => 0x43;
     bool ICallbackProvider.IsHookable => true;
     RealModeAddress ICallbackProvider.CallbackAddress
@@ -165,11 +163,7 @@ internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallb
     ushort IInputPort.ReadWord(int port) => throw new NotSupportedException();
     void IOutputPort.WriteByte(int port, byte value) => this.vm.PhysicalMemory.EnableA20 = (value & 0x02) != 0;
     void IOutputPort.WriteWord(int port, ushort value) => throw new NotSupportedException();
-    void IVirtualDevice.DeviceRegistered(VirtualMachine vm)
-    {
-        this.vm = vm;
-        this.InitializeMemoryMap();
-    }
+    void IVirtualDevice.DeviceRegistered(VirtualMachine vm) => this.InitializeMemoryMap();
 
     /// <summary>
     /// Attempts to allocate a block of extended memory.
@@ -205,7 +199,7 @@ internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallb
 
         var freeNode = this.xms.Find(smallestFreeBlock.Value);
 
-        var newNodes = freeNode.Value.Allocate(handle, length);
+        var newNodes = freeNode!.Value.Allocate(handle, length);
         this.xms.Replace((XmsBlock)smallestFreeBlock, newNodes);
 
         this.handles.Add(handle, 0);
@@ -295,7 +289,7 @@ internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallb
     /// <param name="firstBlock">Free block to merge.</param>
     private void MergeFreeBlocks(XmsBlock firstBlock)
     {
-        var firstNode = this.xms.Find(firstBlock);
+        var firstNode = this.xms.Find(firstBlock)!;
 
         if (firstNode.Next != null)
         {
@@ -437,60 +431,54 @@ internal sealed class ExtendedMemoryManager : IMultiplexInterruptHandler, ICallb
         bool a20State = this.vm.PhysicalMemory.EnableA20;
         this.vm.PhysicalMemory.EnableA20 = true;
 
-        XmsMoveData moveData;
-        unsafe
-        {
-            moveData = *(XmsMoveData*)this.vm.PhysicalMemory.GetPointer(this.vm.Processor.DS, this.vm.Processor.SI);
-        }
+        var moveData = this.vm.PhysicalMemory.GetRef<XmsMoveData>(this.vm.Processor.DS, this.vm.Processor.SI);
 
-        IntPtr srcPtr = IntPtr.Zero;
-        IntPtr destPtr = IntPtr.Zero;
+        ReadOnlySpan<byte> src;
 
         if (moveData.SourceHandle == 0)
         {
             var srcAddress = moveData.SourceAddress;
-            srcPtr = this.vm.PhysicalMemory.GetPointer(srcAddress.Segment, srcAddress.Offset);
+            src = this.vm.PhysicalMemory.GetSpan(srcAddress.Segment, srcAddress.Offset, (int)moveData.Length);
         }
         else
         {
             if (this.TryGetBlock(moveData.SourceHandle, out var srcBlock))
-                srcPtr = this.vm.PhysicalMemory.GetPointer((int)(XmsBaseAddress + (srcBlock).Offset + moveData.SourceOffset));
+            {
+                src = this.vm.PhysicalMemory.Span.Slice((int)(XmsBaseAddress + srcBlock.Offset + moveData.SourceOffset), (int)moveData.Length);
+            }
+            else
+            {
+                vm.Processor.BL = 0xA3; // Invalid source handle.
+                vm.Processor.AX = 0; // Didn't work.
+                goto Done;
+            }
         }
+
+        Span<byte> dest;
 
         if (moveData.DestHandle == 0)
         {
             var destAddress = moveData.DestAddress;
-            destPtr = this.vm.PhysicalMemory.GetPointer(destAddress.Segment, destAddress.Offset);
+            dest = this.vm.PhysicalMemory.GetSpan(destAddress.Segment, destAddress.Offset, (int)moveData.Length);
         }
         else
         {
             if (this.TryGetBlock(moveData.DestHandle, out var destBlock))
-                destPtr = this.vm.PhysicalMemory.GetPointer((int)(XmsBaseAddress + destBlock.Offset + moveData.DestOffset));
+            {
+                dest = this.vm.PhysicalMemory.Span.Slice((int)(XmsBaseAddress + destBlock.Offset + moveData.DestOffset), (int)moveData.Length);
+            }
+            else
+            {
+                vm.Processor.BL = 0xA5; // Invalid destination handle.
+                vm.Processor.AX = 0; // Didn't work.
+                goto Done;
+            }
         }
 
-        if (srcPtr == IntPtr.Zero)
-        {
-            vm.Processor.BL = 0xA3; // Invalid source handle.
-            vm.Processor.AX = 0; // Didn't work.
-            return;
-        }
-        if (destPtr == IntPtr.Zero)
-        {
-            vm.Processor.BL = 0xA5; // Invalid destination handle.
-            vm.Processor.AX = 0; // Didn't work.
-            return;
-        }
-
-        unsafe
-        {
-            byte* src = (byte*)srcPtr.ToPointer();
-            byte* dest = (byte*)destPtr.ToPointer();
-
-            for (uint i = 0; i < moveData.Length; i++)
-                dest[i] = src[i];
-        }
-
+        src.CopyTo(dest);
         vm.Processor.AX = 1; // Success.
+
+    Done:
         this.vm.PhysicalMemory.EnableA20 = a20State;
     }
     /// <summary>

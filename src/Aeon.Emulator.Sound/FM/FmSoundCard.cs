@@ -1,5 +1,4 @@
-﻿using System.Runtime.CompilerServices;
-using TinyAudio;
+﻿using TinyAudio;
 using Ymf262Emu;
 
 namespace Aeon.Emulator.Sound.FM;
@@ -29,7 +28,7 @@ public sealed class FmSoundCard : IInputPort, IOutputPort, IDisposable
         this.synth = new FmSynthesizer(this.audioPlayer.Format.SampleRate);
     }
 
-    IEnumerable<int> IInputPort.InputPorts => [0x388];
+    ReadOnlySpan<ushort> IInputPort.InputPorts => [0x388];
     byte IInputPort.ReadByte(int port)
     {
         if ((this.timerControlByte & 0x01) != 0x00 && (this.statusByte & Timer1Mask) == 0)
@@ -50,7 +49,7 @@ public sealed class FmSoundCard : IInputPort, IOutputPort, IDisposable
     }
     ushort IInputPort.ReadWord(int port) => this.statusByte;
 
-    IEnumerable<int> IOutputPort.OutputPorts => [0x388, 0x389];
+    ReadOnlySpan<ushort> IOutputPort.OutputPorts => [0x388, 0x389];
     void IOutputPort.WriteByte(int port, byte value)
     {
         if (port == 0x388)
@@ -129,7 +128,6 @@ public sealed class FmSoundCard : IInputPort, IOutputPort, IDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private async Task GenerateWaveformsAsync()
     {
         var buffer = new float[1024];

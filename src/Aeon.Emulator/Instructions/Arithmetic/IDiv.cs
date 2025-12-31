@@ -1,9 +1,13 @@
-﻿using System;
+﻿using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics.X86;
 
 namespace Aeon.Emulator.Instructions.Arithmetic;
 
+#pragma warning disable SYSLIB5004 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+
 internal static class IDiv
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [Opcode("F6/7 rmb", OperandSize = 16 | 32, AddressSize = 16 | 32)]
     public static void ByteDivide(Processor p, sbyte divisor)
     {
@@ -20,6 +24,7 @@ internal static class IDiv
     }
 
     [Opcode("F7/7 rmw", AddressSize = 16 | 32)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void WordDivide(Processor p, short divisor)
     {
         if (divisor != 0)
@@ -43,24 +48,30 @@ internal static class IDiv
             ThrowHelper.ThrowEmulatedDivideByZeroException();
         }
     }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [Alternate(nameof(WordDivide), AddressSize = 16 | 32)]
     public unsafe static void DWordDivide(Processor p, int divisor)
     {
         if (divisor != 0)
         {
-            long fullValue;
             ref var eax = ref p.EAX;
             ref var edx = ref p.EDX;
-            unsafe
+            int quotient;
+            int remainder;
+
+            if (X86Base.IsSupported)
             {
-                var parts = (int*)&fullValue;
-                parts[0] = eax;
-                parts[1] = edx;
+                (quotient, remainder) = X86Base.DivRem((uint)eax, edx, divisor);
+            }
+            else
+            {
+                var (q, r) = Math.DivRem(((long)edx << 32) | (uint)eax, divisor);
+                quotient = (int)q;
+                remainder = (int)r;
             }
 
-            long quotient = Math.DivRem(fullValue, divisor, out long remainder);
-            eax = (int)quotient;
-            edx = (int)remainder;
+            eax = quotient;
+            edx = remainder;
         }
         else
         {

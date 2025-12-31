@@ -27,17 +27,19 @@ public sealed class PhysicalMemory
     /// <summary>
     /// Array of cached physical page addresses.
     /// </summary>
-    private unsafe uint* pageCache;
+    private readonly uint[] pageCache;
 
     /// <summary>
     /// Pointer to emulated physical memory.
     /// </summary>
-    internal unsafe byte* RawView;
+    private readonly byte[] rawView;
 
     /// <summary>
     /// The linear address of the page table directory.
     /// </summary>
     private uint directoryAddress;
+
+    private uint ldtBase;
 
     /// <summary>
     /// Address of the BIOS int15h C0 data table.
@@ -94,21 +96,13 @@ public sealed class PhysicalMemory
     /// </summary>
     private const ushort HandlerSegment = 0xF100;
 
-    internal PhysicalMemory()
-        : this(1024 * 1024 * 16)
-    {
-    }
     internal PhysicalMemory(int memorySize)
     {
-        if (memorySize < ConvMemorySize)
-            throw new ArgumentException("Memory size must be at least 1 MB.");
+        ArgumentOutOfRangeException.ThrowIfLessThan(memorySize, (int)ConvMemorySize);
 
         this.MemorySize = memorySize;
-        unsafe
-        {
-            this.RawView = (byte*)NativeMemory.AllocZeroed((nuint)memorySize, 1);
-            this.pageCache = (uint*)NativeMemory.AllocZeroed(PageAddressCacheSize, 4);
-        }
+        this.rawView = new byte[memorySize];
+        this.pageCache = new uint[PageAddressCacheSize];
 
         // Reserve room for the real-mode interrupt table.
         this.Reserve(0x0000, 256 * 4);
@@ -129,8 +123,6 @@ public sealed class PhysicalMemory
         InitializeBiosData();
     }
 
-    ~PhysicalMemory() => this.InternalDispose();
-
     /// <summary>
     /// Gets the amount of emulated RAM in bytes.
     /// </summary>
@@ -142,16 +134,7 @@ public sealed class PhysicalMemory
     /// <summary>
     /// Gets the entire emulated RAM as a <see cref="Span{byte}"/>.
     /// </summary>
-    public Span<byte> Span
-    {
-        get
-        {
-            unsafe
-            {
-                return new Span<byte>(this.RawView, this.MemorySize);
-            }
-        }
-    }
+    public Span<byte> Span => this.rawView;
     /// <summary>
     /// Gets the BIOS mapped regions of memory.
     /// </summary>
@@ -168,10 +151,12 @@ public sealed class PhysicalMemory
     /// Gets or sets the size of the GDT.
     /// </summary>
     internal uint GDTLimit { get; set; }
+    internal uint LDTLimit { get; private set; }
+
     /// <summary>
     /// Gets or sets the GDT selector of the current LDT.
     /// </summary>
-    internal ushort LDTSelector { get; set; }
+    internal ushort LDTSelector { get; private set; }
     /// <summary>
     /// Gets or sets the current linear offset of the interrupt descriptor table.
     /// </summary>
@@ -194,10 +179,7 @@ public sealed class PhysicalMemory
         {
             this.directoryAddress = value;
             // flush the page cache
-            unsafe
-            {
-                new Span<uint>(this.pageCache, PageAddressCacheSize).Clear();
-            }
+            this.pageCache.AsSpan().Clear();
         }
     }
     /// <summary>
@@ -225,40 +207,34 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="segment">Segment whose descriptor is returned.</param>
     /// <returns>Descriptor of the specified segment.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Descriptor GetDescriptor(uint segment)
     {
         uint selectorIndex = segment >> 3;
         uint baseAddress;
+        uint offset = selectorIndex * 8u;
 
         // Check for local descriptor.
         if ((segment & 4) != 0)
         {
-            unsafe
-            {
-                var ldtDescriptor = (SegmentDescriptor)GetDescriptor(this.LDTSelector & 0xFFF8u);
-                baseAddress = ldtDescriptor.Base;
-            }
+            if (this.LDTSelector == 0 || segment == 0)
+                ThrowHelper.ThrowGeneralProtectionFaultException(0);
+
+            baseAddress = this.ldtBase;
         }
         else
         {
             baseAddress = this.GDTAddress;
         }
 
-        unsafe
-        {
-            ulong value = GetUInt64(baseAddress + (selectorIndex * 8u));
-            //ulong value = *(ulong*)(this.RawView + baseAddress + (selectorIndex * 8u));
-            Descriptor* descriptor = (Descriptor*)&value;
-            return *descriptor;
-        }
+        return Unsafe.BitCast<ulong, Descriptor>(GetUInt64(baseAddress + offset));
     }
+
     /// <summary>
     /// Gets the address of an interrupt handler.
     /// </summary>
     /// <param name="interrupt">Interrupt to get handler address for.</param>
     /// <returns>Segment and offset of the interrupt handler.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public RealModeAddress GetRealModeInterruptAddress(byte interrupt)
     {
         ushort offset = GetUInt16(0, (ushort)(interrupt * 4));
@@ -270,63 +246,52 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="interrupt">Interrupt whose descriptor is returned.</param>
     /// <returns>Interrupt descriptor for the specified interrupt.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public Descriptor GetInterruptDescriptor(byte interrupt)
     {
         unsafe
         {
             ulong value = GetUInt64(this.IDTAddress + (interrupt * 8u));
-            //ulong value = *(ulong*)(this.RawView + this.IDTAddress + (interrupt * 8u));
             var descriptor = (Descriptor*)&value;
             return *descriptor;
         }
     }
-    /// <summary>
-    /// Gets a pointer to a location in the emulated memory.
-    /// </summary>
-    /// <param name="segment">Segment of pointer.</param>
-    /// <param name="offset">Offset of pointer.</param>
-    /// <returns>Pointer to the emulated location at segment:offset.</returns>
-    public IntPtr GetPointer(uint segment, uint offset)
-    {
-        unsafe
-        {
-            return new IntPtr(RawView + GetRealModePhysicalAddress(segment, offset));
-        }
-    }
-    /// <summary>
-    /// Gets a pointer to a location in the emulated memory.
-    /// </summary>
-    /// <param name="address">Address of pointer.</param>
-    /// <returns>Pointer to the specified address.</returns>
-    public IntPtr GetPointer(int address)
-    {
-        address &= (int)addressMask;
 
-        unsafe
-        {
-            return new IntPtr(RawView + address);
-        }
-    }
-    public Span<byte> GetSpan(uint address, int length)
+    public ref T GetRef<T>(uint segment, uint offset) where T : struct
     {
-        address &= addressMask;
+        if (this.PagingEnabled)
+            throw new InvalidOperationException("This method can only be called from real mode.");
 
-        unsafe
+        return ref Unsafe.As<byte, T>(ref MemoryMarshal.GetReference(this.Span.Slice((int)this.GetRealModePhysicalAddress(segment, offset), Unsafe.SizeOf<T>())));
+    }
+
+    public Span<byte> GetPagedSpan(uint address, int length, bool writeAccess = false)
+    {
+        uint physicalAddress;
+
+        if (this.PagingEnabled)
         {
-            return new Span<byte>(RawView + address, length);
+            if ((address & 0xFFFu) > 4096u - (uint)length)
+                throw new InvalidOperationException("Cannot return contiguous span of memory across a page boundary.");
+
+            physicalAddress = GetPagedPhysicalAddress(address, writeAccess ? PageFaultCause.Write : PageFaultCause.Read);
         }
+        else
+        {
+            physicalAddress = address & addressMask;
+        }
+
+#warning fix to detect overlap correctly
+        if (physicalAddress >= VramAddress && physicalAddress < VramUpperBound)
+            throw new ArgumentException("Not supported for video RAM mapped addresses.");
+
+        return this.Span.Slice((int)physicalAddress, length);
     }
     public Span<byte> GetSpan(uint segment, uint offset, int length)
     {
-        unsafe
-        {
-            uint fullAddress = GetRealModePhysicalAddress(segment, offset);
-            if (fullAddress >= VramAddress && fullAddress < VramUpperBound)
-                throw new ArgumentException("Not supported for video RAM mapped addresses.");
+        if (this.PagingEnabled)
+            throw new InvalidOperationException("This method can only be used in real mode.");
 
-            return new Span<byte>(RawView + fullAddress, length);
-        }
+        return this.GetPagedSpan(this.GetRealModePhysicalAddress(segment, offset), length);
     }
     public int ReadFromStream(uint segment, uint offset, Stream source, int length)
     {
@@ -388,7 +353,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of byte to read.</param>
     /// <returns>Byte at the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public byte GetByte(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<byte>(address) : this.PhysicalRead<byte>(address);
@@ -406,7 +370,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of byte to write.</param>
     /// <param name="value">Value to write to the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetByte(uint address, byte value)
     {
         if (this.PagingEnabled)
@@ -421,14 +384,12 @@ public sealed class PhysicalMemory
     /// <param name="segment">Segment of unsigned 16-bit integer to read.</param>
     /// <param name="offset">Offset of unsigned 16-bit integer to read.</param>
     /// <returns>Unsigned 16-bit integer at the specified segment and offset.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public ushort GetUInt16(uint segment, uint offset) => this.RealModeRead<ushort>(segment, offset);
     /// <summary>
     /// Reads an unsigned 16-bit integer from emulated memory.
     /// </summary>
     /// <param name="address">Physical address of unsigned 16-bit integer to read.</param>
     /// <returns>Unsigned 16-bit integer at the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public ushort GetUInt16(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<ushort>(address) : this.PhysicalRead<ushort>(address);
@@ -446,7 +407,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of unsigned 16-bit integer to write.</param>
     /// <param name="value">Value to write to the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetUInt16(uint address, ushort value)
     {
         if (this.PagingEnabled)
@@ -467,7 +427,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of unsigned 32-bit integer to read.</param>
     /// <returns>Unsigned 32-bit integer at the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public uint GetUInt32(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<uint>(address) : this.PhysicalRead<uint>(address);
@@ -485,7 +444,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of unsigned 32-bit integer to write.</param>
     /// <param name="value">Value to write to the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetUInt32(uint address, uint value)
     {
         if (this.PagingEnabled)
@@ -506,7 +464,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of unsigned 64-bit integer to read.</param>
     /// <returns>Unsigned 64-bit integer at the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public ulong GetUInt64(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<ulong>(address) : this.PhysicalRead<ulong>(address);
@@ -524,7 +481,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Physical address of unsigned 64-bit integer to write.</param>
     /// <param name="value">Value to write to the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetUInt64(uint address, ulong value)
     {
         if (this.PagingEnabled)
@@ -538,7 +494,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Address of value to read.</param>
     /// <returns>32-bit System.Single value read from the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public float GetReal32(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<float>(address) : this.PhysicalRead<float>(address);
@@ -549,7 +504,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Address where value will be written.</param>
     /// <param name="value">32-bit System.Single value to write at the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetReal32(uint address, float value)
     {
         if (this.PagingEnabled)
@@ -563,7 +517,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Address of value to read.</param>
     /// <returns>64-bit System.Double value read from the specified address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public double GetReal64(uint address)
     {
         return this.PagingEnabled ? this.PagedRead<double>(address) : this.PhysicalRead<double>(address);
@@ -574,7 +527,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="address">Address where value will be written.</param>
     /// <param name="value">64-bit System.Double value to write at the specified address.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     public void SetReal64(uint address, double value)
     {
         if (this.PagingEnabled)
@@ -605,7 +557,9 @@ public sealed class PhysicalMemory
             this.PhysicalWrite(address, value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public TValue Get<TValue>(uint address) where TValue : unmanaged => this.PagingEnabled ? this.PagedRead<TValue>(address) : this.PhysicalRead<TValue>(address);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Set<TValue>(uint address, TValue value) where TValue : unmanaged
     {
         if (this.PagingEnabled)
@@ -623,8 +577,8 @@ public sealed class PhysicalMemory
     /// <returns>String read from the specified segment and offset.</returns>
     public string GetString(uint segment, uint offset, int length)
     {
-        var ptr = GetPointer(segment, offset);
-        return System.Runtime.InteropServices.Marshal.PtrToStringAnsi(ptr, length);
+        var ptr = this.GetSpan(segment, offset, length);
+        return Encoding.Latin1.GetString(ptr);
     }
     /// <summary>
     /// Reads an ANSI string from emulated memory with a maximum length and end sentinel character.
@@ -688,51 +642,6 @@ public sealed class PhysicalMemory
     /// <param name="value">String to write to the specified address.</param>
     public void SetString(uint segment, uint offset, string value) => SetString(segment, offset, value, true);
     /// <summary>
-    /// Searches emulated memory for all occurrences of a string of bytes.
-    /// </summary>
-    /// <param name="match">String of bytes to search for.</param>
-    /// <returns>Raw index into memory where string was found.</returns>
-    public IEnumerable<int> Find(byte[] match)
-    {
-        ArgumentNullException.ThrowIfNull(match);
-        if (match.Length == 0)
-            throw new ArgumentException("Array must not be empty.");
-
-        int length = match.Length;
-        for (int i = 0; i < VramAddress - length; i++)
-        {
-            if (SafeArrayAccess(i) == match[0])
-            {
-                bool isMatch = true;
-                for (int j = 1; j < length; j++)
-                {
-                    if (SafeArrayAccess(i + j) != match[j])
-                    {
-                        isMatch = false;
-                        break;
-                    }
-                }
-
-                if (isMatch)
-                    yield return i;
-            }
-        }
-    }
-    /// <summary>
-    /// Searches emulated memory for all occurrences of an ASCII string.
-    /// </summary>
-    /// <param name="match">ASCII string to search for.</param>
-    /// <returns>Raw index into memory where string was found.</returns>
-    public IEnumerable<int> Find(string match)
-    {
-        ArgumentNullException.ThrowIfNull(match);
-        if (match == string.Empty)
-            throw new ArgumentException("String cannot be empty.");
-
-        var buffer = Encoding.ASCII.GetBytes(match);
-        return Find(buffer);
-    }
-    /// <summary>
     /// Reads bytes from memory into a buffer.
     /// </summary>
     /// <param name="buffer">Buffer into which bytes will be written.</param>
@@ -761,7 +670,7 @@ public sealed class PhysicalMemory
             unsafe
             {
                 for (int i = 0; i < count; i++)
-                    buffer[bufferOffset + i] = this.RawView[offset + i];
+                    buffer[bufferOffset + i] = this.rawView[offset + i];
             }
 
             return;
@@ -831,7 +740,6 @@ public sealed class PhysicalMemory
     /// </summary>
     /// <param name="segment">Segment whose descriptor is written.</param>
     /// <param name="descriptor">Descriptor to write.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
     internal void SetDescriptor(uint segment, Descriptor descriptor)
     {
         uint selectorIndex = segment >> 3;
@@ -872,29 +780,25 @@ public sealed class PhysicalMemory
     /// <returns>Address of the callback handler.</returns>
     internal RealModeAddress AddCallbackHandler(byte id, bool hookable)
     {
-        var ptr = GetPointer(HandlerSegment, nextHandlerOffset);
+        var writePtr = this.GetSpan(HandlerSegment, nextHandlerOffset, 10);
         int length = 4;
-        unsafe
+        if (hookable)
         {
-            byte* writePtr = (byte*)ptr.ToPointer();
-            if (hookable)
-            {
-                writePtr[0] = 0xE9; // JMP iw
-                writePtr[1] = 3; // jump past the 3 nops
-                writePtr[2] = 0;
-                writePtr[3] = 0x90;
-                writePtr[4] = 0x90;
-                writePtr[5] = 0x90;
+            writePtr[0] = 0xE9; // JMP iw
+            writePtr[1] = 3; // jump past the 3 nops
+            writePtr[2] = 0;
+            writePtr[3] = 0x90;
+            writePtr[4] = 0x90;
+            writePtr[5] = 0x90;
 
-                writePtr += 6;
-                length += 6;
-            }
-
-            writePtr[0] = 0x0F;
-            writePtr[1] = 0x56;
-            writePtr[2] = id;
-            writePtr[3] = 0xCB; // RETF
+            writePtr = writePtr[6..];
+            length += 6;
         }
+
+        writePtr[0] = 0x0F;
+        writePtr[1] = 0x56;
+        writePtr[2] = id;
+        writePtr[3] = 0xCB; // RETF
 
         var address = new RealModeAddress(HandlerSegment, nextHandlerOffset);
         nextHandlerOffset += (ushort)length;
@@ -909,8 +813,8 @@ public sealed class PhysicalMemory
     /// <param name="offset">Offset of the interrupt handler.</param>
     public void SetInterruptAddress(byte interrupt, ushort segment, ushort offset)
     {
-        SetUInt16(0, (ushort)(interrupt * 4), offset);
-        SetUInt16(0, (ushort)(interrupt * 4 + 2), segment);
+        this.SetUInt16(0, (ushort)(interrupt * 4), offset);
+        this.SetUInt16(0, (ushort)(interrupt * 4 + 2), segment);
     }
     /// <summary>
     /// Adds an interrupt handler to the virtual interrupt table.
@@ -921,48 +825,46 @@ public sealed class PhysicalMemory
     /// <param name="clearInterruptFlag">Value indicating whether the interrupt handler should clear the CPU Interrupt Enable flag.</param>
     internal void AddInterruptHandler(byte interrupt, Registers savedRegisters, bool isHookable, bool clearInterruptFlag)
     {
-        SetInterruptAddress(interrupt, (ushort)HandlerSegment, nextHandlerOffset);
-        var ptr = GetPointer(HandlerSegment, nextHandlerOffset);
+        this.SetInterruptAddress(interrupt, HandlerSegment, nextHandlerOffset);
+        var ptr = this.GetSpan(HandlerSegment, nextHandlerOffset, 30);
+        int length = 0;
         unsafe
         {
-            byte* startPtr = (byte*)ptr.ToPointer();
-            byte* offsetPtr = startPtr;
-
             if (isHookable)
             {
-                offsetPtr[0] = 0xE9; // JMP iw
-                offsetPtr[1] = 3; // jump past the 3 nops
-                offsetPtr[2] = 0;
-                offsetPtr[3] = 0x90;
-                offsetPtr[4] = 0x90;
-                offsetPtr[5] = 0x90;
-                offsetPtr += 6;
+                ptr[0] = 0xE9; // JMP iw
+                ptr[1] = 3; // jump past the 3 nops
+                ptr[2] = 0;
+                ptr[3] = 0x90;
+                ptr[4] = 0x90;
+                ptr[5] = 0x90;
+                ptr = ptr[6..];
+                length += 6;
             }
 
             // Write a CLI instruction if requested.
             if (clearInterruptFlag)
             {
-                *offsetPtr = 0xFA;
-                offsetPtr++;
+                ptr[0] = 0xFA;
+                ptr = ptr[1..];
+                length++;
             }
 
-            WritePushInstructions(ref offsetPtr, savedRegisters);
+            length += WritePushInstructions(ref ptr, savedRegisters);
 
             // Write instructions 0F55 interrupt, iret to memory.
-            *offsetPtr = 0x0F;
-            offsetPtr++;
-            *offsetPtr = 0x55;
-            offsetPtr++;
-            *offsetPtr = interrupt;
-            offsetPtr++;
+            ptr[0] = 0x0F;
+            ptr[1] = 0x55;
+            ptr[2] = interrupt;
+            ptr = ptr[3..];
+            length += 3;
 
-            WritePopInstructions(ref offsetPtr, savedRegisters);
+            length += WritePopInstructions(ref ptr, savedRegisters);
 
-            *offsetPtr = 0xCF;
-            offsetPtr++;
+            ptr[0] = 0xCF;
+            length++;
 
-            ushort length = (ushort)(offsetPtr - startPtr);
-            nextHandlerOffset += length;
+            nextHandlerOffset += (ushort)length;
         }
     }
     /// <summary>
@@ -996,85 +898,44 @@ public sealed class PhysicalMemory
         SetByte(HandlerSegment, nextHandlerOffset, 0xCF);
         nextHandlerOffset++;
     }
-    /// <summary>
-    /// Reads 16 bytes from emulated memory into a buffer.
-    /// </summary>
-    /// <param name="address">Address where bytes will be read from.</param>
-    /// <param name="buffer">Buffer into which bytes will be written.</param>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
-    internal unsafe void FetchInstruction(uint address, byte* buffer)
+    internal void FetchInstruction(uint address, out CachedInstruction buffer)
     {
         if (this.PagingEnabled)
-            PagedFetchInstruction(address, buffer);
+            PagedFetchInstruction(address, out buffer);
         else
-            Unsafe.CopyBlock(buffer, this.RawView + (address & this.addressMask), 16);
+            buffer = Unsafe.ReadUnaligned<CachedInstruction>(in this.Span[(int)(address & this.addressMask)]);
     }
-
-    /// <summary>
-    /// Returns a pointer to a block of memory, making sure it is paged in.
-    /// </summary>
-    /// <param name="address">Logical address of block.</param>
-    /// <param name="size">Number of bytes in block of memory.</param>
-    /// <returns>Pointer to block of memory.</returns>
-    internal unsafe void* GetSafePointer(uint address, uint size)
+    internal void UpdateLocalDescriptor(ushort selector)
     {
-        if (this.PagingEnabled)
+        this.LDTSelector = selector;
+        if (selector != 0)
         {
-            uint baseAddress = GetPagedPhysicalAddress(address, PageFaultCause.Read);
-            if ((address & 0xFFFu) + size > 4096)
-                GetPagedPhysicalAddress(address + 4096u, PageFaultCause.Read);
+            var desc = GetDescriptor(this.LDTSelector);
+            if (desc.DescriptorType != DescriptorType.Ldt)
+                ThrowHelper.ThrowGeneralProtectionFaultException(selector);
 
-            return RawView + baseAddress;
-        }
-        else
-        {
-            return RawView + address;
+            var ldtDescriptor = (SegmentDescriptor)desc;
+            this.ldtBase = ldtDescriptor.Base;
+            this.LDTLimit = ldtDescriptor.ByteLimit;
         }
     }
 
-    /// <summary>
-    /// Frees unmanaged memory.
-    /// </summary>
-    /// <remarks>
-    /// Implemented this way instead of with <see cref="IDisposable"/> because it's not
-    /// intended to be publicly exposed. <see cref="VirtualMachine"/> is responsible for
-    /// calling this.
-    /// </remarks>
-    internal void InternalDispose()
+    private void PagedFetchInstruction(uint address, out CachedInstruction buffer)
     {
         unsafe
         {
-            if (this.pageCache != null)
+            uint fullPagedAddress = GetPagedPhysicalAddress(address, PageFaultCause.InstructionFetch);
+            if ((fullPagedAddress & 0xFFFu) < 4096u - 16u)
             {
-                NativeMemory.Free(this.pageCache);
-                this.pageCache = null;
+                buffer = Unsafe.ReadUnaligned<CachedInstruction>(in this.Span[(int)fullPagedAddress]);
             }
-
-            if (this.RawView != null)
+            else
             {
-                NativeMemory.Free(this.RawView);
-                this.RawView = null;
+                Unsafe.SkipInit(out buffer);
+                ref ulong ptr = ref Unsafe.As<CachedInstruction, ulong>(ref buffer);
+                ptr = this.PagedRead<ulong>(address, PageFaultCause.InstructionFetch, checkVram: false);
+                Unsafe.Add(ref ptr, 1) = this.PagedRead<ulong>(address + 8u, PageFaultCause.InstructionFetch, checkVram: false);
             }
-
-#pragma warning disable CA1816 // Dispose methods should call SuppressFinalize
-            GC.SuppressFinalize(this);
-#pragma warning restore CA1816 // Dispose methods should call SuppressFinalize
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
-    private unsafe void PagedFetchInstruction(uint address, byte* buffer)
-    {
-        uint fullPagedAddress = GetPagedPhysicalAddress(address, PageFaultCause.InstructionFetch);
-        if ((fullPagedAddress & 0xFFFu) < 4096u - 16u)
-        {
-            Unsafe.CopyBlock(buffer, this.RawView + fullPagedAddress, 16);
-        }
-        else
-        {
-            var ptr = (ulong*)buffer;
-            ptr[0] = this.PagedRead<ulong>(address, PageFaultCause.InstructionFetch, checkVram: false);
-            ptr[1] = this.PagedRead<ulong>(address + 8u, PageFaultCause.InstructionFetch, checkVram: false);
         }
     }
 
@@ -1083,7 +944,7 @@ public sealed class PhysicalMemory
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void RealModeWrite<T>(uint segment, uint offset, T value) where T : unmanaged => this.PhysicalWrite(this.GetRealModePhysicalAddress(segment, offset), value);
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private T PhysicalRead<T>(uint address, bool mask = true, bool checkVram = true) where T : unmanaged
     {
         uint fullAddress = mask ? (address & this.addressMask) : address;
@@ -1095,7 +956,7 @@ public sealed class PhysicalMemory
                 if (fullAddress >= (uint)this.MemorySize)
                     ThrowOutOfRange(fullAddress);
 
-                return Unsafe.ReadUnaligned<T>(this.RawView + fullAddress);
+                return Unsafe.ReadUnaligned<T>(in this.Span[(int)fullAddress]);
             }
             else
             {
@@ -1109,15 +970,19 @@ public sealed class PhysicalMemory
                     ushort s = this.Video!.GetVramWord(fullAddress - VramAddress);
                     return Unsafe.As<ushort, T>(ref s);
                 }
-                else
+                else if (sizeof(T) == 4)
                 {
                     uint i = this.Video!.GetVramDWord(fullAddress - VramAddress);
                     return Unsafe.As<uint, T>(ref i);
                 }
+                else
+                {
+                    throw new ArgumentException("Cannot read value from video memory.");
+                }
             }
         }
     }
-    [MethodImpl(MethodImplOptions.AggressiveOptimization | MethodImplOptions.AggressiveInlining)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void PhysicalWrite<T>(uint address, T value, bool mask = true) where T : unmanaged
     {
         uint fullAddress = mask ? (address & this.addressMask) : address;
@@ -1129,7 +994,7 @@ public sealed class PhysicalMemory
                 if (fullAddress >= (uint)this.MemorySize)
                     ThrowOutOfRange(fullAddress);
 
-                Unsafe.WriteUnaligned(this.RawView + fullAddress, value);
+                Unsafe.WriteUnaligned(ref this.Span[(int)fullAddress], value);
             }
             else
             {
@@ -1137,14 +1002,14 @@ public sealed class PhysicalMemory
                     this.Video!.SetVramByte(fullAddress - VramAddress, Unsafe.As<T, byte>(ref value));
                 else if (sizeof(T) == 2)
                     this.Video!.SetVramWord(fullAddress - VramAddress, Unsafe.As<T, ushort>(ref value));
-                else
+                else if (sizeof(T) == 4)
                     this.Video!.SetVramDWord(fullAddress - VramAddress, Unsafe.As<T, uint>(ref value));
+                else
+                    throw new ArgumentException("Cannot write value to video memory.");
             }
         }
     }
 
-    [SkipLocalsInit]
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private T PagedRead<T>(uint logicalAddress, PageFaultCause mode = PageFaultCause.Read, bool checkVram = true) where T : unmanaged
     {
         uint physicalAddress = GetPagedPhysicalAddress(logicalAddress, mode);
@@ -1165,7 +1030,6 @@ public sealed class PhysicalMemory
             }
         }
     }
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void PagedWrite<T>(uint logicalAddress, T value) where T : unmanaged
     {
         uint physicalAddress = GetPagedPhysicalAddress(logicalAddress, PageFaultCause.Write);
@@ -1191,7 +1055,7 @@ public sealed class PhysicalMemory
     /// <param name="linearAddress">Paged linear address.</param>
     /// <param name="operation">Type of operation attempted in case of a page fault.</param>
     /// <returns>Physical address of the supplied linear address.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint GetPagedPhysicalAddress(uint linearAddress, PageFaultCause operation)
     {
         uint pageCacheIndex = linearAddress >> 12;
@@ -1219,25 +1083,22 @@ public sealed class PhysicalMemory
     /// <param name="linearAddress">Paged linear address.</param>
     /// <param name="operation">Type of operation attempted in case of a page fault.</param>
     /// <returns>Physical address of the page.</returns>
-    [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.AggressiveOptimization)]
     private uint GetPage(uint linearAddress, PageFaultCause operation)
     {
-        uint page;
-        if (Bmi1.IsSupported)
-            page = Bmi1.BitFieldExtract(linearAddress, 0x0A0C);
-        else
-            page = (linearAddress >> 12) & 0x3FFu;
+        uint page = (linearAddress >>> 12) & 0x3FFu;
 
-        uint dir = linearAddress >> 22;
+        uint dir = linearAddress >>> 22;
 
         unsafe
         {
-            uint* dirPtr = (uint*)(RawView + directoryAddress);
+            var dirPtr = new UnsafePointer<uint>(ref Unsafe.As<byte, uint>(ref this.Span[(int)directoryAddress]));
+            //uint* dirPtr = (uint*)(rawView + directoryAddress);
             if ((dirPtr[dir] & PagePresent) == 0)
                 throw new PageFaultException(linearAddress, operation);
 
             uint pageAddress = dirPtr[dir] & 0xFFFFF000u;
-            uint* pagePtr = (uint*)(RawView + pageAddress);
+            var pagePtr = new UnsafePointer<uint>(ref Unsafe.As<byte, uint>(ref this.Span[(int)pageAddress]));
+            //uint* pagePtr = (uint*)(rawView + pageAddress);
             if ((pagePtr[page] & PagePresent) == 0)
                 throw new PageFaultException(linearAddress, operation);
 
@@ -1251,7 +1112,7 @@ public sealed class PhysicalMemory
     /// <param name="segment">Memory segment or selector.</param>
     /// <param name="offset">Offset into segment.</param>
     /// <returns>Physical address of the specified segment and offset.</returns>
-    [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint GetRealModePhysicalAddress(uint segment, uint offset) => ((segment << 4) + offset) & this.addressMask;
     /// <summary>
     /// Provides access to emulated memory for a safe context.
@@ -1263,7 +1124,7 @@ public sealed class PhysicalMemory
     {
         unsafe
         {
-            return RawView[index];
+            return rawView[index];
         }
     }
     /// <summary>
@@ -1299,70 +1160,74 @@ public sealed class PhysicalMemory
         SetByte(segment, offset + 6u, 0x40);
     }
 
-    private static unsafe void WriteInstruction(ref byte* ptr, byte instruction)
+    private static int WritePushInstructions(ref Span<byte> ptr, Registers registers)
     {
-        *ptr = instruction;
-        ptr++;
+        int length = 0;
+
+        if (registers.HasFlag(Registers.AX))
+            ptr[length++] = 0x50;
+
+        if (registers.HasFlag(Registers.BX))
+            ptr[length++] = 0x53;
+
+        if (registers.HasFlag(Registers.CX))
+            ptr[length++] = 0x51;
+
+        if (registers.HasFlag(Registers.DX))
+            ptr[length++] = 0x52;
+
+        if (registers.HasFlag(Registers.BP))
+            ptr[length++] = 0x55;
+
+        if (registers.HasFlag(Registers.SI))
+            ptr[length++] = 0x56;
+
+        if (registers.HasFlag(Registers.DI))
+            ptr[length++] = 0x57;
+
+        if (registers.HasFlag(Registers.DS))
+            ptr[length++] = 0x1E;
+
+        if (registers.HasFlag(Registers.ES))
+            ptr[length++] = 0x06;
+
+        ptr = ptr[length..];
+        return length;
     }
-    private static unsafe void WritePushInstructions(ref byte* ptr, Registers registers)
+    private static int WritePopInstructions(ref Span<byte> ptr, Registers registers)
     {
-        if ((registers & Registers.AX) != 0)
-            WriteInstruction(ref ptr, 0x50);
+        int length = 0;
 
-        if ((registers & Registers.BX) != 0)
-            WriteInstruction(ref ptr, 0x53);
+        if (registers.HasFlag(Registers.ES))
+            ptr[length++] = 0x07;
 
-        if ((registers & Registers.CX) != 0)
-            WriteInstruction(ref ptr, 0x51);
+        if (registers.HasFlag(Registers.DS))
+            ptr[length++] = 0x1F;
 
-        if ((registers & Registers.DX) != 0)
-            WriteInstruction(ref ptr, 0x52);
+        if (registers.HasFlag(Registers.DI))
+            ptr[length++] = 0x58 + 7;
 
-        if ((registers & Registers.BP) != 0)
-            WriteInstruction(ref ptr, 0x55);
+        if (registers.HasFlag(Registers.SI))
+            ptr[length++] = 0x58 + 6;
 
-        if ((registers & Registers.SI) != 0)
-            WriteInstruction(ref ptr, 0x56);
+        if (registers.HasFlag(Registers.BP))
+            ptr[length++] = 0x58 + 5;
 
-        if ((registers & Registers.DI) != 0)
-            WriteInstruction(ref ptr, 0x57);
+        if (registers.HasFlag(Registers.DX))
+            ptr[length++] = 0x58 + 2;
 
-        if ((registers & Registers.DS) != 0)
-            WriteInstruction(ref ptr, 0x1E);
+        if (registers.HasFlag(Registers.CX))
+            ptr[length++] = 0x58 + 1;
 
-        if ((registers & Registers.ES) != 0)
-            WriteInstruction(ref ptr, 0x06);
-    }
-    private static unsafe void WritePopInstructions(ref byte* ptr, Registers registers)
-    {
-        if ((registers & Registers.ES) != 0)
-            WriteInstruction(ref ptr, 0x07);
+        if (registers.HasFlag(Registers.BX))
+            ptr[length++] = 0x58 + 3;
 
-        if ((registers & Registers.DS) != 0)
-            WriteInstruction(ref ptr, 0x1F);
+        if (registers.HasFlag(Registers.AX))
+            ptr[length++] = 0x58;
 
-        if ((registers & Registers.DI) != 0)
-            WriteInstruction(ref ptr, 0x58 + 7);
-
-        if ((registers & Registers.SI) != 0)
-            WriteInstruction(ref ptr, 0x58 + 6);
-
-        if ((registers & Registers.BP) != 0)
-            WriteInstruction(ref ptr, 0x58 + 5);
-
-        if ((registers & Registers.DX) != 0)
-            WriteInstruction(ref ptr, 0x58 + 2);
-
-        if ((registers & Registers.CX) != 0)
-            WriteInstruction(ref ptr, 0x58 + 1);
-
-        if ((registers & Registers.BX) != 0)
-            WriteInstruction(ref ptr, 0x58 + 3);
-
-        if ((registers & Registers.AX) != 0)
-            WriteInstruction(ref ptr, 0x58);
+        ptr = ptr[length..];
+        return length;
     }
     [DoesNotReturn]
-    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void ThrowOutOfRange(uint address) => throw new InvalidOperationException($"Attempted to access invalid physical address 0x{address:X8}.");
 }

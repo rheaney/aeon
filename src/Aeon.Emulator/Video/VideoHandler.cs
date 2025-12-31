@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Aeon.Emulator.Interrupts;
 using Aeon.Emulator.Memory;
 
@@ -9,7 +10,7 @@ namespace Aeon.Emulator.Video;
 /// <summary>
 /// Provides emulated video and int 10h functions.
 /// </summary>
-internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort, IDisposable
+internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort
 {
     /// <summary>
     /// Total number of bytes allocated for video RAM.
@@ -25,7 +26,6 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
     private static readonly long HorizontalPeriod = (long)((1000.0 / 60.0) / 480.0 * InterruptTimer.StopwatchTicksPerMillisecond);
     private static readonly long HorizontalBlankingTime = HorizontalPeriod / 2;
 
-    private bool disposed;
     private GraphicsRegister graphicsRegister;
     private SequencerRegister sequencerRegister;
     private AttributeControllerRegister attributeRegister;
@@ -38,10 +38,7 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
     public VideoHandler(VirtualMachine vm)
     {
         this.VirtualMachine = vm;
-        unsafe
-        {
-            this.VideoRam = new IntPtr(NativeMemory.AllocZeroed(TotalVramBytes));
-        }
+        this.VideoRam = new byte[TotalVramBytes];
 
         this.vbe = new Vesa.VbeHandler(this);
 
@@ -50,8 +47,6 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
         this.TextConsole = new TextConsole(this, vm.PhysicalMemory.Bios);
         this.SetDisplayMode(VideoMode10.ColorText80x25x4);
     }
-
-    ~VideoHandler() => this.InternalDispose();
 
     /// <summary>
     /// Gets the current display mode.
@@ -84,7 +79,10 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
     /// <summary>
     /// Gets a pointer to the emulated video RAM.
     /// </summary>
-    public IntPtr VideoRam { get; }
+    public byte[] VideoRam { get; }
+    public Span<byte> VideoRamSpan => this.VideoRam;
+    public Vesa.VbeHandler Vbe => this.vbe;
+
     /// <summary>
     /// Gets the virtual machine instance which owns the VideoHandler.
     /// </summary>
@@ -283,34 +281,28 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
         }
     }
 
-    IEnumerable<int> IInputPort.InputPorts
-    {
-        get
-        {
-            return new SortedSet<int>
-            {
-                Ports.AttributeAddress,
-                Ports.AttributeData,
-                Ports.CrtControllerAddress,
-                Ports.CrtControllerAddressAlt,
-                Ports.CrtControllerData,
-                Ports.CrtControllerDataAlt,
-                Ports.DacAddressReadMode,
-                Ports.DacAddressWriteMode,
-                Ports.DacData,
-                Ports.DacStateRead,
-                Ports.FeatureControlRead,
-                Ports.GraphicsControllerAddress,
-                Ports.GraphicsControllerData,
-                Ports.InputStatus0Read,
-                Ports.InputStatus1Read,
-                Ports.InputStatus1ReadAlt,
-                Ports.MiscOutputRead,
-                Ports.SequencerAddress,
-                Ports.SequencerData
-            };
-        }
-    }
+    ReadOnlySpan<ushort> IInputPort.InputPorts =>
+    [
+        Ports.AttributeAddress,
+        Ports.AttributeData,
+        Ports.CrtControllerAddress,
+        Ports.CrtControllerAddressAlt,
+        Ports.CrtControllerData,
+        Ports.CrtControllerDataAlt,
+        Ports.DacAddressReadMode,
+        Ports.DacAddressWriteMode,
+        Ports.DacData,
+        Ports.DacStateRead,
+        Ports.FeatureControlRead,
+        Ports.GraphicsControllerAddress,
+        Ports.GraphicsControllerData,
+        Ports.InputStatus0Read,
+        Ports.InputStatus1Read,
+        Ports.InputStatus1ReadAlt,
+        Ports.MiscOutputRead,
+        Ports.SequencerAddress,
+        Ports.SequencerData
+    ];
     public byte ReadByte(int port)
     {
         switch (port)
@@ -361,31 +353,25 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
     }
     public ushort ReadWord(int port) => this.ReadByte(port);
 
-    IEnumerable<int> IOutputPort.OutputPorts
-    {
-        get
-        {
-            return new SortedSet<int>
-            {
-                Ports.AttributeAddress,
-                Ports.AttributeData,
-                Ports.CrtControllerAddress,
-                Ports.CrtControllerAddressAlt,
-                Ports.CrtControllerData,
-                Ports.CrtControllerDataAlt,
-                Ports.DacAddressReadMode,
-                Ports.DacAddressWriteMode,
-                Ports.DacData,
-                Ports.FeatureControlWrite,
-                Ports.FeatureControlWriteAlt,
-                Ports.GraphicsControllerAddress,
-                Ports.GraphicsControllerData,
-                Ports.MiscOutputWrite,
-                Ports.SequencerAddress,
-                Ports.SequencerData
-            };
-        }
-    }
+    ReadOnlySpan<ushort> IOutputPort.OutputPorts =>
+    [
+        Ports.AttributeAddress,
+        Ports.AttributeData,
+        Ports.CrtControllerAddress,
+        Ports.CrtControllerAddressAlt,
+        Ports.CrtControllerData,
+        Ports.CrtControllerDataAlt,
+        Ports.DacAddressReadMode,
+        Ports.DacAddressWriteMode,
+        Ports.DacData,
+        Ports.FeatureControlWrite,
+        Ports.FeatureControlWriteAlt,
+        Ports.GraphicsControllerAddress,
+        Ports.GraphicsControllerData,
+        Ports.MiscOutputWrite,
+        Ports.SequencerAddress,
+        Ports.SequencerData
+    ];
     public void WriteByte(int port, byte value)
     {
         switch (port)
@@ -447,8 +433,6 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
                 break;
         }
     }
-
-    void IVirtualDevice.DeviceRegistered(VirtualMachine vm) => vm.RegisterVirtualDevice(this.vbe);
 
     /// <summary>
     /// Reads a byte from video RAM.
@@ -552,12 +536,6 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
             Dac.Reset();
 
         VirtualMachine.OnVideoModeChanged(new VideoModeChangedEventArgs(true));
-    }
-
-    void IDisposable.Dispose()
-    {
-        this.InternalDispose();
-        GC.SuppressFinalize(this);
     }
 
     /// <summary>
@@ -749,28 +727,20 @@ internal sealed class VideoHandler : IInterruptHandler, IInputPort, IOutputPort,
         VirtualMachine.Processor.AL = 0x1B;
     }
 
-    private void InternalDispose()
-    {
-        if (!this.disposed)
-        {
-            unsafe
-            {
-                if (this.VideoRam != IntPtr.Zero)
-                    NativeMemory.Free(this.VideoRam.ToPointer());
-            }
-
-            this.disposed = true;
-        }
-    }
-
     /// <summary>
     /// Returns the current value of the input status 1 register.
     /// </summary>
     /// <returns>Current value of the input status 1 register.</returns>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static byte GetInputStatus1Value()
     {
-        uint value = InterruptTimer.IsInRealtimeInterval(VerticalBlankingTime, RefreshRate) ? 0x09u : 0x00u;
-        if (InterruptTimer.IsInRealtimeInterval(HorizontalBlankingTime, HorizontalPeriod))
+        uint value = 0;
+
+        long ticks = Stopwatch.GetTimestamp();
+        if ((ticks % RefreshRate) < VerticalBlankingTime)
+            value = 0x09u;
+
+        if ((ticks % HorizontalPeriod) < HorizontalBlankingTime)
             value |= 0x01u;
 
         return (byte)value;

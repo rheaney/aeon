@@ -1,13 +1,11 @@
 ﻿using System.Collections.Concurrent;
 
-#nullable disable
-
 namespace Aeon.Emulator.Keyboard;
 
 /// <summary>
 /// Emulates a physical keyboard device and handles related interrupts.
 /// </summary>
-internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPort
+internal sealed class KeyboardDevice(VirtualMachine vm) : IInterruptHandler, IInputPort, IOutputPort
 {
     private const ushort LeftShiftUp = 0xAA;
     private const ushort RightShiftUp = 0xB6;
@@ -17,24 +15,19 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
     private const int InitialRepeatDelay = 250;
     private const int RepeatDelay = 30;
 
-    private VirtualMachine vm;
+    private readonly VirtualMachine vm = vm;
     private readonly ConcurrentQueue<byte> hardwareQueue = new();
     private readonly List<byte> internalBuffer = [];
     private readonly ConcurrentQueue<ushort> typeBuffer = new();
     private KeyModifiers modifiers;
     private bool leftShiftDown;
     private bool rightShiftDown;
-    private readonly SortedList<Keys, bool> pressedKeys = [];
+    private readonly SortedSet<Keys> pressedKeys = [];
+    private readonly Lock pressedKeysLock = new();
     private int expectedInputByteCount;
     private volatile Keys lastKey;
-    private Timer autoRepeatTimer;
+    private Timer? autoRepeatTimer;
     private readonly Lock autoRepeatTimerLock = new();
-
-    public KeyboardDevice()
-    {
-        foreach (Keys k in Enum.GetValues<Keys>())
-            this.pressedKeys[k] = false;
-    }
 
     /// <summary>
     /// Gets a value indicating whether the type-ahead buffer has at least one character in it.
@@ -56,11 +49,10 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
     /// <param name="key">Key pressed on the keyboard.</param>
     public void PressKey(Keys key)
     {
-        lock (this.pressedKeys)
+        lock (this.pressedKeysLock)
         {
-            if (!this.pressedKeys[key])
+            if (this.pressedKeys.Add(key))
             {
-                this.pressedKeys[key] = true;
                 this.HardwareEnqueue(key, true);
                 this.lastKey = key;
                 lock (this.autoRepeatTimerLock)
@@ -79,14 +71,11 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
     /// <param name="key">Key released on the keyboard.</param>
     public void ReleaseKey(Keys key)
     {
-        lock (this.pressedKeys)
+        lock (this.pressedKeysLock)
         {
             this.lastKey = default;
-            if (this.pressedKeys[key])
-            {
-                this.pressedKeys[key] = false;
+            if (this.pressedKeys.Remove(key))
                 this.HardwareEnqueue(key, false);
-            }
         }
     }
     /// <summary>
@@ -365,18 +354,18 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
 
         vm.Processor.AL = value;
     }
-    private void AutoRepeatTrigger(object obj)
+    private void AutoRepeatTrigger(object? obj)
     {
-        lock (this.pressedKeys)
+        lock (this.pressedKeysLock)
         {
             var key = this.lastKey;
 
-            if (this.pressedKeys[key])
+            if (this.pressedKeys.Contains(key))
             {
                 this.HardwareEnqueue(key, true);
                 lock (this.autoRepeatTimerLock)
                 {
-                    this.autoRepeatTimer.Change(RepeatDelay, Timeout.Infinite);
+                    this.autoRepeatTimer!.Change(RepeatDelay, Timeout.Infinite);
                 }
             }
         }
@@ -391,7 +380,7 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
             HandleInt16h();
     }
 
-    IEnumerable<int> IInputPort.InputPorts => [0x60, 0x64];
+    ReadOnlySpan<ushort> IInputPort.InputPorts => [0x60, 0x64];
     byte IInputPort.ReadByte(int port)
     {
         return port switch
@@ -403,7 +392,7 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
     }
     ushort IInputPort.ReadWord(int port) => throw new NotSupportedException();
 
-    IEnumerable<int> IOutputPort.OutputPorts => [0x60, 0x64];
+    ReadOnlySpan<ushort> IOutputPort.OutputPorts => [0x60, 0x64];
     void IOutputPort.WriteByte(int port, byte value)
     {
         if (port == 0x60)
@@ -412,6 +401,4 @@ internal sealed class KeyboardDevice : IInterruptHandler, IInputPort, IOutputPor
         System.Diagnostics.Debug.WriteLine($"Keyboard port {port:X}h -> {value:X2}h");
     }
     void IOutputPort.WriteWord(int port, ushort value) => throw new NotSupportedException();
-
-    void IVirtualDevice.DeviceRegistered(VirtualMachine vm) => this.vm = vm;
 }
