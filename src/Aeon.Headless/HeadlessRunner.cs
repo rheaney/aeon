@@ -2,8 +2,8 @@ namespace Aeon.Headless;
 
 using Aeon.DiskImages;
 using Aeon.Emulator;
+using Aeon.Emulator.Configuration;
 using Aeon.Emulator.Dos.VirtualFileSystem;
-using Aeon.Emulator.Launcher.Configuration;
 using Aeon.Emulator.Sound;
 
 using System;
@@ -41,7 +41,7 @@ public sealed class HeadlessRunner : IAsyncDisposable, IDisposable
         ArgumentNullException.ThrowIfNull(config);
 
         Configuration = config;
-        _host = new EmulatorHost(config.PhysicalMemorySize ?? 16);
+        _host = new EmulatorHost(new VirtualMachineInitializationOptions { PhysicalMemorySize = config.PhysicalMemorySize ?? 16 });
 
         ApplyConfiguration();
     }
@@ -135,7 +135,7 @@ public sealed class HeadlessRunner : IAsyncDisposable, IDisposable
     private void ApplyConfiguration()
     {
         var vm = _host.VirtualMachine;
-        var global = GlobalConfiguration.Load();
+        var global = AeonConfiguration.LoadGlobalConfig();
 
         foreach (var (letter, info) in Configuration.Drives)
         {
@@ -427,7 +427,6 @@ public sealed class HeadlessAeonConfig
 {
     public string StartupPath { get; set; } = @"C:\";
     public string? Launch { get; set; }
-    public bool HideUserInterface { get; set; } = true;
     public bool IsMouseAbsolute { get; set; }
     public int? EmulationSpeed { get; set; }
     public int? PhysicalMemorySize { get; set; }
@@ -441,7 +440,6 @@ public sealed class HeadlessAeonConfig
         {
             StartupPath = StartupPath,
             Launch = Launch ?? string.Empty,
-            HideUserInterface = HideUserInterface,
             IsMouseAbsolute = IsMouseAbsolute,
             EmulationSpeed = EmulationSpeed,
             PhysicalMemorySize = PhysicalMemorySize,
