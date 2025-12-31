@@ -1,5 +1,7 @@
 ﻿#nullable disable
 
+using System.Threading;
+
 namespace Aeon.Emulator.LowLevelDisk;
 
 internal sealed class LowLevelDiskInterface : IInterruptHandler, IDisposable
@@ -31,7 +33,17 @@ internal sealed class LowLevelDiskInterface : IInterruptHandler, IDisposable
         this.vm = vm;
         this.diskMotorTimer.Change(5000, Timeout.Infinite);
     }
-    public void Dispose() => this.diskMotorTimer.Dispose();
+    public void Dispose()
+    {
+        // Ensure no callbacks run after the VM memory is freed.
+        using var wait = new ManualResetEvent(false);
+        if (!this.diskMotorTimer.Dispose(wait))
+        {
+            wait.Set();
+        }
+
+        wait.WaitOne();
+    }
 
     private void UpdateDiskMotorTimer(object state)
     {

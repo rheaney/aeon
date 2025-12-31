@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Company>Aeon</Company>
+    <Version>0.7.1.101</Version>
+    <Product>Aeon</Product>
+    <IsAotCompatible>true</IsAotCompatible>
+    <RootNamespace>Iconic.App.Process.Sources.Extraction.Emulation</RootNamespace>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <IncludeReferencedProjects>false</IncludeReferencedProjects>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);IncludeReferenceCopyLocal</TargetsForTfmSpecificBuildOutput>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <Target Name="IncludeReferenceCopyLocal" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <!-- Bring along project outputs (no NuGetPackageId metadata). -->
+      <_ReferenceCopyLocalManaged Include="@(ReferenceCopyLocalPaths)" Condition=" '%(ReferenceCopyLocalPaths.NuGetPackageId)' == '' " />
+      <BuildOutputInPackage Include="@(_ReferenceCopyLocalManaged)" />
+    </ItemGroup>
+  </Target>
+  <ItemGroup>
+    <ProjectReference Include="..\Aeon.Configuration\Aeon.Configuration.csproj" />
+    <ProjectReference Include="..\Aeon.DiskImages\Aeon.DiskImages.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator.Input\Aeon.Emulator.Input.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator.Sound\Aeon.Emulator.Sound.csproj" />
+    <ProjectReference Include="..\Aeon.Emulator\Aeon.Emulator.csproj" />
+  </ItemGroup>
+</Project>
+
+

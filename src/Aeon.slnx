@@ -3,6 +3,11 @@
   <Project Path="Aeon.Emulator.Input/Aeon.Emulator.Input.csproj" />
   <Project Path="Aeon.Emulator.Sound/Aeon.Emulator.Sound.csproj" />
   <Project Path="Aeon.Emulator/Aeon.Emulator.csproj" />
+<<<<<<< Updated upstream
+=======
+  <Project Path="Aeon.Headless.Test/Aeon.Headless.Test.csproj" Id="d9d60c55-1aa4-43a3-81b9-da98007932eb" />
+  <Project Path="Aeon.Headless/Aeon.Headless.csproj" />
+>>>>>>> Stashed changes
   <Project Path="Aeon.Test/Aeon.Test.csproj" />
   <Project Path="Aeon/Aeon.csproj" />
   <Project Path="AeonSourceGenerator/AeonSourceGenerator.csproj" />

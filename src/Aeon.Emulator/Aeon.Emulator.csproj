@@ -14,4 +14,8 @@
 	<ItemGroup>
 		<ProjectReference Include="..\AeonSourceGenerator\AeonSourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
 	</ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Aeon.Headless" />
+    <InternalsVisibleTo Include="Aeon.Headless.Test" />
+  </ItemGroup>
 </Project>
